@@ -1,0 +1,358 @@
+/* ============================================================
+   MusicControls — Unified CSS
+   Prefix: vc-mc-
+   Accent driven by --vc-mc-accent (set inline per source)
+   ============================================================ */
+
+/* Bypass Discord's overflow so the player can sit above the user panel */
+#app-mount [class*="panels__"] {
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: visible !important;
+}
+
+/* ── Position anchor (invisible, sits at top of panels flex) ── */
+.vc-mc-position-anchor {
+    position: relative;
+    width: 100%;
+    order: -999 !important;
+    height: 0px !important;
+    z-index: 1000;
+    pointer-events: none;
+}
+
+/* ── Player bubble ──────────────────────────────────────────── */
+#vc-mc-player {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 8px 12px;
+    background: var(--background-surface-high, #1e1f22);
+    position: absolute;
+    bottom: 8px;
+    left: 0px;
+    box-sizing: border-box;
+
+    /* Compact state */
+    width: calc(70% - 16px);
+    height: 64px;
+
+    overflow: hidden;
+    transition:
+        width   0.35s cubic-bezier(0.4, 0, 0.2, 1),
+        height  0.35s cubic-bezier(0.4, 0, 0.2, 1),
+        padding 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    border-radius: 12px;
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
+    box-shadow: var(--elevation-high);
+    pointer-events: auto;
+
+    /* Accent color — overridden inline per source:
+       Spotify   → #1db954
+       SoundCloud→ #ff5500
+       YTMusic   → #ff0033  */
+    --vc-mc-accent: #1db954;
+}
+
+#vc-mc-player:hover {
+    width: calc(100% - 16px);
+    height: 108px;
+    justify-content: center;
+    padding: 12px;
+}
+
+/* ── Horizontal layout ──────────────────────────────────────── */
+.vc-mc-horizontal-layout-wrapper {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    width: 100%;
+    height: 100%;
+    flex-grow: 1;
+}
+
+/* ── Middle column ──────────────────────────────────────────── */
+.vc-mc-middle-content-col {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    flex-grow: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+/* ── Left: Album art ────────────────────────────────────────── */
+.vc-mc-album-col {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 12px;
+    flex-shrink: 0;
+}
+
+#vc-mc-player:hover .vc-mc-album-col {
+    align-items: stretch;
+}
+
+/* Wrapper to allow source badge overlay */
+.vc-mc-album-image-wrap {
+    position: relative;
+    width: 46px;
+    height: 46px;
+    flex-shrink: 0;
+    transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1), height 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#vc-mc-player:hover .vc-mc-album-image-wrap {
+    width: 84px;
+    height: 84px;
+}
+
+#vc-mc-album-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 6px;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: filter 0.2s ease;
+}
+
+#vc-mc-album-image:hover {
+    filter: brightness(1.2);
+}
+
+/* Source indicator — single subtle icon, bottom-right of album art */
+.vc-mc-source-indicator {
+    position: absolute;
+    bottom: 3px;
+    right: 3px;
+    width: 11px;
+    height: 11px;
+    color: #fff;
+    opacity: 0.35;
+    pointer-events: none;
+    z-index: 10;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+}
+
+.vc-mc-source-badge {
+    width: 100%;
+    height: 100%;
+    fill: currentColor;
+    display: block;
+}
+
+
+/* ── Titles ─────────────────────────────────────────────────── */
+.vc-mc-titles-wrapper {
+    display: flex;
+    flex-direction: column;
+    white-space: nowrap;
+    overflow: hidden;
+    padding-top: 2px;
+}
+
+#vc-mc-song-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--header-primary, #fff);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.2;
+}
+
+.vc-mc-artist-name {
+    font-size: 12px;
+    color: var(--text-muted, #B9BBBE);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: normal;
+}
+
+#vc-mc-song-title[role="link"]:hover {
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+/* ── Hover controls ─────────────────────────────────────────── */
+.vc-mc-hover-playback-controls {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    height: 0;
+    overflow: hidden;
+    transition: opacity 0.2s ease, height 0.35s ease, margin 0.35s ease;
+}
+
+#vc-mc-player:hover .vc-mc-hover-playback-controls {
+    opacity: 1;
+    pointer-events: auto;
+    height: 48px;
+    transition-delay: 0.15s;
+}
+
+/* ── Playback buttons ───────────────────────────────────────── */
+.vc-mc-button-row {
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 4px;
+    padding-left: 1px;
+}
+
+.vc-mc-button {
+    margin: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--interactive-icon-default, #B9BBBE);
+    padding: 0;
+    width: 46px;
+    height: 34px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    border: none;
+}
+
+.vc-mc-button:hover {
+    color: var(--interactive-icon-hover, #DCDDDE);
+    background-color: var(--background-mod-strong);
+}
+
+.vc-mc-button-icon {
+    height: 36px;
+    width: 36px;
+}
+
+.vc-mc-shuffle .vc-mc-button-icon,
+.vc-mc-repeat  .vc-mc-button-icon {
+    width: 24px;
+    height: 24px;
+}
+
+/* Active state for shuffle / repeat — uses accent color */
+.vc-mc-repeat-context,
+.vc-mc-repeat-track,
+.vc-mc-shuffle-on {
+    background-color: transparent !important;
+    color: var(--vc-mc-accent) !important;
+}
+
+.vc-mc-repeat-1 {
+    font-size: 70%;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+
+/* ── Right: Volume column ───────────────────────────────────── */
+.vc-mc-volume-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    width: 0px;
+    opacity: 0;
+    pointer-events: none;
+    height: 0px;
+    overflow: hidden;
+    margin-left: 0;
+    transition: opacity 0.2s ease, width 0.35s ease, margin 0.35s ease, height 0.35s ease;
+}
+
+#vc-mc-player:hover .vc-mc-volume-col {
+    opacity: 1;
+    pointer-events: auto;
+    width: 24px;
+    height: 84px;
+    overflow: visible;
+    margin-left: 6px;
+    transition-delay: 0.15s;
+}
+
+.vc-mc-volume-bar-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+}
+
+.vc-mc-volume-slider-container {
+    flex-grow: 1;
+    width: 24px;
+    height: 48px;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.vc-mc-native-volume-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 48px;
+    height: 4px;
+    background: #4f545c;
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+    transform: rotate(-90deg);
+    margin: 0;
+    transition: opacity 0.2s ease;
+}
+
+.vc-mc-native-volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background-color: var(--header-primary, #fff);
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+.vc-mc-volume-button {
+    width: 32px !important;
+    height: 32px !important;
+    margin-bottom: 4px;
+    background-color: transparent !important;
+    color: var(--interactive-icon-default, #B9BBBE) !important;
+    border-radius: var(--radius-sm) !important;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.vc-mc-volume-button:hover {
+    background-color: var(--background-mod-strong) !important;
+    color: var(--interactive-icon-active, #fff) !important;
+}
+
+.vc-mc-volume-button .vc-mc-button-icon {
+    width: 18px;
+    height: 18px;
+}
+
+/* ── Utilities ──────────────────────────────────────────────── */
+.vc-mc-ellipoverflow {
+    white-space: nowrap;
+    overflow: hidden;
+    width: 100%;
+    text-overflow: ellipsis;
+}
+
+.vc-mc-fallback {
+    padding: 8px 12px;
+    color: var(--text-muted);
+    font-size: 12px;
+}

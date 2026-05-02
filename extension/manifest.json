@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Music Controls Vencord Bridge",
+  "version": "1.0.0",
+  "description": "Bridges YouTube Music and SoundCloud state to Discord. Requires the MusicControls Vencord plugin.",
+  "permissions": ["tabs", "scripting"],
+  "host_permissions": [
+    "https://music.youtube.com/*",
+    "https://soundcloud.com/*",
+    "https://*.sndcdn.com/*",
+    "http://127.0.0.1:8547/*",
+    "http://127.0.0.1:8548/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://music.youtube.com/*"],
+      "js": ["ytm_content_main.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://music.youtube.com/*"],
+      "js": ["ytm_content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://soundcloud.com/*"],
+      "js": ["sc_content_main.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://soundcloud.com/*"],
+      "js": ["sc_content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Music Controls Bridge"
+  }
+}
