@@ -3,7 +3,7 @@
 Control **Spotify**, **YouTube Music**, and **SoundCloud** from inside Discord.  
 A player sits above your account panel — see what's playing, skip, seek, adjust volume, shuffle, repeat. Works with all three services at once.
 
-![Player widget small](images/showcasesmall.png)
+![Player widget small](images/showcase-small.png)
 ![Player widget](images/showcase.png)
 
 Rich presence shows on your Discord profile so others can see what you're listening to.
