@@ -152,3 +152,9 @@ Discord Settings → Plugins → MusicControls:
 **"Listening to..." not showing on profile**
 - Make sure "Enable Rich Presence" is on in plugin settings
 - Make sure your Discord status is not set to Invisible
+
+---
+
+## Support
+
+Having issues or questions? Contact me on Discord: **fozen**
