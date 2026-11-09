@@ -14,40 +14,35 @@ const SERVERS = {
     sc:  "http://127.0.0.1:8548",
 };
 
+const REQUEST_TIMEOUT_MS = 2000;
+const RETRY_MIN_MS = 2000;
+const RETRY_MAX_MS = 15000;
+
 const state = {
-    ytm: { connected: false, lastTrack: null },
-    sc:  { connected: false, lastTrack: null },
+    ytm: { connected: false, lastTrack: null, inFlight: false, queued: null, retryAt: 0, retryDelay: 0 },
+    sc:  { connected: false, lastTrack: null, inFlight: false, queued: null, retryAt: 0, retryDelay: 0 },
 };
 
 // ── Tab injection ─────────────────────────────────────────────────────────────
+// The manifest injects into every tab that loads after the extension starts.
+// Tabs that were already open when it was installed, updated or reloaded
+// still run the old (now disconnected) relay, so give them a fresh one.
 
-async function injectYTM(tabId) {
-    try {
-        await chrome.scripting.executeScript({ target: { tabId }, files: ["ytm_content_main.js"], world: "MAIN" });
-        await chrome.scripting.executeScript({ target: { tabId }, files: ["ytm_content.js"],      world: "ISOLATED" });
-    } catch { }
-}
+const INJECT = {
+    ytm: { url: "https://music.youtube.com/*", main: "ytm_content_main.js", relay: "ytm_content.js" },
+    sc:  { url: "https://soundcloud.com/*",    main: "sc_content_main.js",  relay: "sc_content.js" },
+};
 
-async function injectSC(tabId) {
-    try {
-        await chrome.scripting.executeScript({ target: { tabId }, files: ["sc_content_main.js"], world: "MAIN" });
-        await chrome.scripting.executeScript({ target: { tabId }, files: ["sc_content.js"],      world: "ISOLATED" });
-    } catch { }
-}
-
-chrome.tabs.query({ url: "https://music.youtube.com/*" }, tabs => tabs.forEach(t => injectYTM(t.id)));
-chrome.tabs.query({ url: "https://soundcloud.com/*"    }, tabs => tabs.forEach(t => injectSC(t.id)));
-
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.status !== "complete") return;
-    if (tab.url?.startsWith("https://music.youtube.com/")) injectYTM(tabId);
-    if (tab.url?.startsWith("https://soundcloud.com/"))    injectSC(tabId);
+chrome.runtime.onInstalled.addListener(() => {
+    for (const { url, main, relay } of Object.values(INJECT)) {
+        chrome.tabs.query({ url }, tabs => tabs.forEach(async ({ id }) => {
+            try {
+                await chrome.scripting.executeScript({ target: { tabId: id }, files: [main],  world: "MAIN" });
+                await chrome.scripting.executeScript({ target: { tabId: id }, files: [relay], world: "ISOLATED" });
+            } catch { }
+        }));
+    }
 });
-
-setInterval(() => {
-    chrome.tabs.query({ url: "https://music.youtube.com/*" }, tabs => tabs.forEach(t => injectYTM(t.id)));
-    chrome.tabs.query({ url: "https://soundcloud.com/*"    }, tabs => tabs.forEach(t => injectSC(t.id)));
-}, 8000);
 
 // ── Active-tab tracking ───────────────────────────────────────────────────────
 // When multiple tabs are open for the same service, only the one that is
@@ -112,9 +107,9 @@ async function toDataUrl(url) {
                 /-(t\d+x\d+|large|small|tiny|mini|badge|crop|original)\.(jpg|jpeg|png|webp)/i,
                 "-t200x200.$2"
             );
-            const res   = await fetch(smallUrl);
-            const buf   = await res.arrayBuffer();
-            const bytes = new Uint8Array(buf);
+            const res = await fetch(smallUrl, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+            if (!res.ok) return url;
+            const bytes = new Uint8Array(await res.arrayBuffer());
             let binary  = "";
             for (let i = 0; i < bytes.length; i += 8192)
                 binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
@@ -133,58 +128,80 @@ async function toDataUrl(url) {
 }
 
 // ── State sync ────────────────────────────────────────────────────────────────
-// activeTabId replaces the old tabUrl query — controls go only to that tab.
+// One request per service at a time: updates that arrive meanwhile replace each
+// other, and only the newest is sent once the current request finishes.
+// While Discord isn't answering, updates are dropped and a retry is attempted
+// every 2 s, backing off to 15 s, instead of failing ten times a second.
 
-async function syncState(server, slot, data, activeTabId, convertThumb) {
+function queueSync(service, data, tabId) {
+    const slot = state[service];
+    if (Date.now() < slot.retryAt) return;
+    slot.queued = { data, tabId };
+    if (!slot.inFlight) flushSync(service);
+}
+
+async function flushSync(service) {
+    const slot = state[service];
+    slot.inFlight = true;
+    while (slot.queued) {
+        const { data, tabId } = slot.queued;
+        slot.queued = null;
+        await syncState(service, data, tabId);
+    }
+    slot.inFlight = false;
+}
+
+async function syncState(service, data, activeTabId) {
+    const slot = state[service];
     try {
         let payload = data;
-        if (convertThumb && data?.track?.thumbnail) {
+        if (service === "sc" && data?.track?.thumbnail) {
             const originalUrl = data.track.thumbnail;
             const dataUrl = await toDataUrl(originalUrl);
             payload = { ...data, track: { ...data.track, thumbnail: dataUrl, thumbnailOriginal: originalUrl } };
         }
 
-        const res = await fetch(`${server}/state`, {
+        const res = await fetch(`${SERVERS[service]}/state`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
-        slot.connected = res.ok;
-        if (!res.ok) return;
-        slot.lastTrack = data?.track ?? null;
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        slot.connected  = true;
+        slot.retryDelay = 0;
+        slot.lastTrack  = data?.track ?? null;
 
         const { control } = await res.json();
-        if (!control?.action || !activeTabId) return;
+        if (!control?.action) return;
 
         // Send control only to the one tab that is currently active
         chrome.tabs.sendMessage(activeTabId, { type: "CONTROL", ...control }).catch(() => {});
     } catch {
-        slot.connected = false;
+        slot.connected  = false;
+        slot.queued     = null;
+        slot.retryDelay = Math.min(RETRY_MAX_MS, Math.max(RETRY_MIN_MS, slot.retryDelay * 2));
+        slot.retryAt    = Date.now() + slot.retryDelay;
     }
 }
 
 // ── Message router ────────────────────────────────────────────────────────────
 
+const UPDATE_TYPES = { YTM_STATE_UPDATE: "ytm", SC_STATE_UPDATE: "sc" };
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    const tabId = sender.tab?.id;
-
-    if (msg.type === "YTM_STATE_UPDATE") {
-        if (!tabId) return;
-        recordTab("ytm", tabId, msg.data?.isPlaying ?? false);
+    const service = UPDATE_TYPES[msg.type];
+    if (service) {
+        const tabId = sender.tab?.id;
+        if (tabId == null) return;
+        recordTab(service, tabId, msg.data?.isPlaying ?? false);
         // Only the active tab drives the server state
-        if (tabId === getActiveTabId("ytm")) {
-            syncState(SERVERS.ytm, state.ytm, msg.data, tabId, false);
-        }
-
-    } else if (msg.type === "SC_STATE_UPDATE") {
-        if (!tabId) return;
-        recordTab("sc", tabId, msg.data?.isPlaying ?? false);
-        if (tabId === getActiveTabId("sc")) {
-            syncState(SERVERS.sc, state.sc, msg.data, tabId, true);
-        }
-
+        if (tabId === getActiveTabId(service)) queueSync(service, msg.data, tabId);
     } else if (msg.type === "GET_STATUS") {
-        sendResponse({ ytm: state.ytm, sc: state.sc });
-        return true;
+        sendResponse({
+            ytm: { connected: state.ytm.connected, lastTrack: state.ytm.lastTrack },
+            sc:  { connected: state.sc.connected,  lastTrack: state.sc.lastTrack },
+        });
     }
 });

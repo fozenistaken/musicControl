@@ -65,9 +65,13 @@ function cleanTitle(t) {
 function getTitle() {
     const el = q(".playbackSoundBadge__titleLink");
     if (el) {
-        // innerText respects CSS visibility and skips SC's sc-visuallyhidden
-        // accessibility span ("Current track: ...") that textContent includes
-        const text = (el.innerText ?? el.textContent ?? "").trim();
+        // Skip SC's sc-visuallyhidden accessibility span ("Current track: ...").
+        // Reading innerText would also skip it but forces a layout on every poll.
+        let text = "";
+        for (const node of el.childNodes) {
+            if (node.nodeType === Node.ELEMENT_NODE && node.classList.contains("sc-visuallyhidden")) continue;
+            text += node.textContent;
+        }
         const clean = cleanTitle(text);
         if (clean) return clean;
     }
@@ -168,38 +172,39 @@ function buildState() {
 
 // ── Sending ───────────────────────────────────────────────────────────────────
 
-let lastJson = "";
-let _forceSend = false;
+// Real changes go out at once. Otherwise a heartbeat every HEARTBEAT_MS keeps
+// the position fresh and lets Discord hand back queued controls in its reply.
+const HEARTBEAT_MS = 250;
+let lastKey  = "";
+let lastSent = 0;
 
 function sendState() {
     try {
         const state = buildState();
-        const json  = state ? JSON.stringify(state) : "null";
-        const changed = json !== lastJson;
-        if (changed) lastJson = json;
-        // Always send when: state changed, OR paused (so pending controls are picked up),
-        // OR a forced startup send is requested.
-        if (changed || !state?.isPlaying || _forceSend) {
-            _forceSend = false;
-            window.postMessage({ __scBridge: true, state: state ?? null }, "*");
-        }
+        const key = state ? JSON.stringify({ ...state, position: 0 }) : "null";
+        const now = Date.now();
+        if (key === lastKey && now - lastSent < HEARTBEAT_MS) return;
+        lastKey  = key;
+        lastSent = now;
+        window.postMessage({ __scBridge: true, state: state ?? null }, location.origin);
     } catch { }
 }
 
-
 setInterval(sendState, POLL_MS);
+
+// The player bar mutates in bursts (timeline, artwork, buttons): read it once per burst
+let _observerTimer = 0;
+function onPlayerMutation() {
+    if (_observerTimer) return;
+    _observerTimer = setTimeout(() => { _observerTimer = 0; sendState(); }, 50);
+}
 
 function setupObserver() {
     const bar = q(".playControls");
     if (!bar) { setTimeout(setupObserver, 1000); return; }
-    new MutationObserver(sendState).observe(bar, { attributes: true, childList: true, subtree: true });
+    new MutationObserver(onPlayerMutation).observe(bar, { attributes: true, childList: true, subtree: true });
 }
 setupObserver();
-
-// Force-send after short delays so MediaSession artwork (loaded async) is captured
-setTimeout(() => { _forceSend = true; sendState(); }, 500);
-setTimeout(() => { _forceSend = true; sendState(); }, 2000);
-
 
 // Instant track-change detection via MediaSession hook
 try {
@@ -217,7 +222,7 @@ try {
 // ── Controls ──────────────────────────────────────────────────────────────────
 
 window.addEventListener("message", (event) => {
-    if (!event.data?.__scBridgeControl) return;
+    if (event.source !== window || !event.data?.__scBridgeControl) return;
 
     switch (event.data.action) {
 

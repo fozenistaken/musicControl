@@ -48,11 +48,11 @@ function getThumbnail(videoId) {
     if (src && src !== "undefined" && !src.endsWith("undefined")) {
         if (src.includes("lh3.googleusercontent.com"))
             src = src.replace(/=w\d+.*$/, "=w500-h500-l90-rj");
-        else if (src.includes("i.ytimg.com"))
-            src = src.replace(/\/\w+default\.jpg$/, "/maxresdefault.jpg");
+        // i.ytimg.com URLs are kept as YouTube Music picked them:
+        // maxresdefault is missing for many uploads, hqdefault always exists
         return src;
     }
-    return videoId ? `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg` : "";
+    return videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : "";
 }
 
 function buildState() {
@@ -83,14 +83,22 @@ function buildState() {
     };
 }
 
-let lastJson = "";
+// Real changes go out at once. Otherwise a heartbeat every HEARTBEAT_MS keeps
+// the position fresh and lets Discord hand back queued controls in its reply.
+const HEARTBEAT_MS = 250;
+let lastKey  = "";
+let lastSent = 0;
 
 function sendState() {
     try {
         const state = buildState();
         if (!state) return;
-        const json = JSON.stringify(state);
-        if (json !== lastJson) { lastJson = json; window.postMessage({ __ytmBridge: true, state }, "*"); }
+        const key = JSON.stringify({ ...state, position: 0 });
+        const now = Date.now();
+        if (key === lastKey && now - lastSent < HEARTBEAT_MS) return;
+        lastKey  = key;
+        lastSent = now;
+        window.postMessage({ __ytmBridge: true, state }, location.origin);
     } catch { }
 }
 
@@ -103,20 +111,12 @@ function setupObserver() {
 }
 setupObserver();
 setInterval(refreshToggles, 500);
-
-setInterval(() => {
-    const state = buildState();
-    if (!state) return;
-    const json = JSON.stringify(state);
-    const changed = json !== lastJson;
-    if (changed) lastJson = json;
-    if (changed || !state.isPlaying) window.postMessage({ __ytmBridge: true, state }, "*");
-}, POLL_MS);
+setInterval(sendState, POLL_MS);
 
 // ── Controls ──────────────────────────────────────────────────────────────────
 
 window.addEventListener("message", (event) => {
-    if (!event.data?.__ytmBridgeControl) return;
+    if (event.source !== window || !event.data?.__ytmBridgeControl) return;
     const p = player();
 
     switch (event.data.action) {
@@ -128,12 +128,16 @@ window.addEventListener("message", (event) => {
             else tap(SEL.next);
             break;
         case "PREVIOUS":
-            if (p && (p.getCurrentTime?.() ?? 0) > 3) p.seekTo(0, true);
-            else if (p?.previousVideo) p.previousVideo();
+            // Restart-vs-previous is decided by the plugin's previousButtonRestartsTrack setting
+            if (p?.previousVideo) p.previousVideo();
             else tap(SEL.previous);
             break;
         case "SEEK":     p?.seekTo?.(event.data.value / 1000, true); break;
-        case "VOLUME":   p?.setVolume?.(event.data.value);           break;
+        case "VOLUME":
+            // A muted player reports volume 0 until unmuted, whatever the level is set to
+            if (event.data.value > 0 && p?.isMuted?.()) p.unMute?.();
+            p?.setVolume?.(event.data.value);
+            break;
         case "SHUFFLE": {
             const want = event.data.value;
             if (want == null || getShuffle() !== !!want) {
