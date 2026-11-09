@@ -59,8 +59,14 @@ const slots: Record<"ytm" | "sc", ServerSlot> = {
     sc:  { server: null, latestState: null, pendingControl: null, port: 8548, label: "SoundCloud" },
 };
 
-function setCors(res: http.ServerResponse) {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+// Only the music sites (content scripts) and browser extensions may talk to the servers.
+// Without this, any open web page could spoof your presence or read queued controls.
+const ALLOWED_ORIGIN = /^(?:(?:chrome|moz)-extension:\/\/[^/]+|https:\/\/(?:[a-z0-9-]+\.)*(?:youtube\.com|soundcloud\.com))$/;
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
+
+function setCors(req: http.IncomingMessage, res: http.ServerResponse) {
+    if (req.headers.origin) res.setHeader("Access-Control-Allow-Origin", req.headers.origin);
+    res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     res.setHeader("Access-Control-Allow-Private-Network", "true");
@@ -70,15 +76,24 @@ function startSlot(slot: ServerSlot) {
     if (slot.server) return;
 
     slot.server = http.createServer((req, res) => {
-        setCors(res);
+        const { origin } = req.headers;
+        if (origin && !ALLOWED_ORIGIN.test(origin)) { res.writeHead(403); res.end(); return; }
+
+        setCors(req, res);
         if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
         if (req.method !== "POST" || req.url !== "/state") { res.writeHead(404); res.end(); return; }
 
-        let body = "";
-        req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+        // Collect raw buffers: decoding per chunk would garble multi-byte characters split across chunks
+        const chunks: Buffer[] = [];
+        let size = 0;
+        req.on("data", (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > MAX_BODY_BYTES) { res.writeHead(413); res.end(); req.destroy(); return; }
+            chunks.push(chunk);
+        });
         req.on("end", () => {
             try {
-                const parsed = JSON.parse(body);
+                const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
                 slot.latestState = parsed ? { ...parsed, _ts: Date.now() } : null;
 
                 let control: { action: string; value?: number; } | null = null;
@@ -245,13 +260,13 @@ function ensureRPCWorker(): Electron.UtilityProcess | null {
     }
 
     try {
-        rpcProc = utilityProcess.fork(WORKER_PATH);
-        rpcProc.on("exit", () => {
+        const proc = rpcProc = utilityProcess.fork(WORKER_PATH);
+        proc.on("exit", () => {
             console.log("[MusicControls/RPC] Worker exited");
-            rpcProc = null;
+            if (rpcProc === proc) rpcProc = null;
         });
         console.log("[MusicControls/RPC] Worker spawned (pid separate from Discord)");
-        return rpcProc;
+        return proc;
     } catch (e) {
         console.error("[MusicControls/RPC] utilityProcess.fork failed:", e);
         return null;
@@ -259,9 +274,12 @@ function ensureRPCWorker(): Electron.UtilityProcess | null {
 }
 
 function stopRPCWorker() {
-    if (!rpcProc) return;
-    try { rpcProc.postMessage({ clientId: "", activity: null }); } catch { }
-    setTimeout(() => { rpcProc?.kill(); rpcProc = null; }, 300);
+    // Detach first so a quick restart spawns a fresh worker instead of reusing the dying one
+    const proc = rpcProc;
+    if (!proc) return;
+    rpcProc = null;
+    try { proc.postMessage({ clientId: "", activity: null }); } catch { }
+    setTimeout(() => proc.kill(), 300);
 }
 
 // ── Exported IPC functions ────────────────────────────────────────────────────

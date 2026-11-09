@@ -19,6 +19,8 @@
 import { proxyLazyWebpack } from "@webpack";
 import { Flux, FluxDispatcher } from "@webpack/common";
 
+import { applyPolledState, createPoller } from "./utils";
+
 declare const VencordNative: {
     native: { openExternal(url: string): void; };
     pluginHelpers: {
@@ -52,43 +54,14 @@ interface SCState {
 
 export const SC_DISPATCH_TYPE = "MC_SOUNDCLOUD_STATE_UPDATE";
 
-// ── Polling ───────────────────────────────────────────────────────────────────
-// Always dispatch on every tick so isSettingPosition resets reliably.
-// Recursive setTimeout prevents overlapping ticks on slow IPC.
-// Adaptive delay: 150 ms playing, 1000 ms paused/no track.
-
-let _scStop = false;
-
-export function startSCPolling(dispatch: typeof FluxDispatcher) {
-    _scStop = false;
-
-    const tick = async () => {
-        if (_scStop) return;
-        try {
-            const data = await VencordNative.pluginHelpers.MusicControls.getSCState() as SCState | null;
-            const alive = data && Date.now() - data._ts < 10_000 ? data : null;
-            dispatch.dispatch({ type: SC_DISPATCH_TYPE, data: alive });
-            setTimeout(tick, alive?.isPlaying ? 150 : 1000);
-        } catch {
-            if (!_scStop) setTimeout(tick, 500);
-        }
-    };
-
-    tick();
-}
-
-export function stopSCPolling() {
-    _scStop = true;
-}
+export const SCPoller = createPoller(SC_DISPATCH_TYPE, () => VencordNative.pluginHelpers.MusicControls.getSCState() as any);
 
 // ── Flux Store ────────────────────────────────────────────────────────────────
 
 export const SCStore = proxyLazyWebpack(() => {
     const { Store } = Flux;
 
-    class SCStore extends (Store as any) {
-        declare emitChange: () => void;
-
+    class SCStore extends Store {
         public mPosition = 0;
         public _start = 0;
         public isSettingPosition = false;
@@ -141,23 +114,9 @@ export const SCStore = proxyLazyWebpack(() => {
 
     const store = new SCStore(FluxDispatcher, {
         [SC_DISPATCH_TYPE]({ data }: { data: SCState | null; }) {
-            if (!data) {
-                store.track = null;
-                store.isPlaying = false;
-                store.isSettingPosition = false;
-                store.emitChange();
-                return;
-            }
-            store.track = data.track ?? null;
-            store.isPlaying = data.isPlaying ?? false;
-            store.volume = data.volume ?? 100;
-            store.repeat = data.repeat ?? "NONE";
-            store.shuffle = data.shuffle ?? false;
-            store.position = data.position ?? 0;
-            store.isSettingPosition = false;
-            store.emitChange();
+            applyPolledState(store, data);
         }
-    });
+    } as any); // custom action types aren't in FluxEvents
 
     return store;
 });

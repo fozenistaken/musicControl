@@ -2,10 +2,18 @@
    MusicControls — Unified CSS
    Prefix: vc-mc-
    Accent driven by --vc-mc-accent (set inline per source)
+
+   The player is always laid out at its expanded size, so hovering
+   never triggers layout. The compact pill is the same layout with
+   the background scaled down and the art/titles translated into it;
+   expand/collapse only animates transform and opacity.
+
+   Sizes are fluid: the anchor is a size container spanning the panel
+   width, and everything inside scales with it (cqi units).
    ============================================================ */
 
 /* Bypass Discord's overflow so the player can sit above the user panel */
-#app-mount [class*="panels__"] {
+#app-mount section[class*="panels_"] {
     display: flex !important;
     flex-direction: column !important;
     overflow: visible !important;
@@ -16,104 +24,101 @@
     position: relative;
     width: 100%;
     order: -999 !important;
-    height: 0px !important;
+    height: 0 !important;
     z-index: 1000;
+    pointer-events: none;
+    container: vc-mc / inline-size;
+}
+
+/* The compact pill (64px + 8px gap) covers the bottom of the channel list:
+   pad the list so its last channels can scroll out from under it */
+[class*="sidebar_"]:has(#vc-mc-player) > [class*="sidebarList_"] [class*="scroller_"] {
+    padding-bottom: 72px;
+}
+
+/* ── Player ─────────────────────────────────────────────────── */
+#vc-mc-player {
+    /* Expanded album art: 44px on narrow sidebars, up to 84px on wide ones */
+    --vc-mc-art: clamp(44px, calc(50cqi - 90px), 84px);
+    --vc-mc-pad: 12px;
+
+    /* Compact pill, as a fraction of the expanded player */
+    --vc-mc-pill-x: 0.72;
+    --vc-mc-pill-y: calc(64 / 108);
+
+    --vc-mc-dur: 0.45s;
+    --vc-mc-ease: cubic-bezier(0.32, 0.72, 0, 1);
+
+    /* Accent color — overridden inline per source:
+       Spotify    → #1db954
+       SoundCloud → #ff5500
+       YTMusic    → #ff0033 */
+    --vc-mc-accent: #1db954;
+
+    display: flex;
+    align-items: center;
+    position: absolute;
+    bottom: 8px;
+    left: 0;
+    box-sizing: border-box;
+    width: calc(100% - 16px);
+    height: 108px;
+    padding: 12px var(--vc-mc-pad);
+    isolation: isolate;
+
+    /* Only the visible parts take the pointer, so the empty area
+       around the compact pill doesn't block the channel list */
     pointer-events: none;
 }
 
-/* ── Player bubble ──────────────────────────────────────────── */
-#vc-mc-player {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    padding: 8px 12px;
-    background: var(--background-surface-high, #1e1f22);
+/* Background panel: scaled from the bottom-left corner down to the pill */
+.vc-mc-bg {
     position: absolute;
-    bottom: 8px;
-    left: 0px;
+    inset: 0;
+    z-index: -1;
     box-sizing: border-box;
-
-    /* Compact state */
-    width: calc(70% - 16px);
-    height: 64px;
-
-    overflow: hidden;
-    transition:
-        width   0.35s cubic-bezier(0.4, 0, 0.2, 1),
-        height  0.35s cubic-bezier(0.4, 0, 0.2, 1),
-        padding 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-    border-radius: 12px;
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
+    background: var(--background-surface-high, #1e1f22);
+    border: 1px solid var(--border-subtle, rgb(255 255 255 / 5%));
+    border-radius: 16px;
     box-shadow: var(--elevation-high);
+    transform-origin: left bottom;
+    transform: scale(var(--vc-mc-pill-x), var(--vc-mc-pill-y));
+    transition: transform var(--vc-mc-dur) var(--vc-mc-ease);
+    will-change: transform;
     pointer-events: auto;
-
-    /* Accent color — overridden inline per source:
-       Spotify   → #1db954
-       SoundCloud→ #ff5500
-       YTMusic   → #ff0033  */
-    --vc-mc-accent: #1db954;
 }
 
-#vc-mc-player:hover {
-    width: calc(100% - 16px);
-    height: 108px;
-    justify-content: center;
-    padding: 12px;
+/* Expanded: on hover, while keyboard focus is inside, or while dragging the volume
+   slider (so leaving the player mid-drag doesn't collapse it under the cursor) */
+#vc-mc-player:is(:hover, :has(:focus-visible), :has(.vc-mc-native-volume-slider:active)) .vc-mc-bg {
+    transform: none;
 }
 
-/* ── Horizontal layout ──────────────────────────────────────── */
-.vc-mc-horizontal-layout-wrapper {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    width: 100%;
-    height: 100%;
-    flex-grow: 1;
-}
-
-/* ── Middle column ──────────────────────────────────────────── */
-.vc-mc-middle-content-col {
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-start;
-    flex-grow: 1;
-    min-width: 0;
-    overflow: hidden;
-}
-
-/* ── Left: Album art ────────────────────────────────────────── */
-.vc-mc-album-col {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-right: 12px;
-    flex-shrink: 0;
-}
-
-#vc-mc-player:hover .vc-mc-album-col {
-    align-items: stretch;
-}
-
-/* Wrapper to allow source badge overlay */
+/* ── Album art ──────────────────────────────────────────────── */
+/* Compact: 46px, centered in the pill */
 .vc-mc-album-image-wrap {
     position: relative;
-    width: 46px;
-    height: 46px;
     flex-shrink: 0;
-    transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1), height 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    width: var(--vc-mc-art);
+    height: var(--vc-mc-art);
+    margin-right: 10px;
+    transform-origin: left center;
+    transform: translateY(22px) scale(calc(46px / var(--vc-mc-art)));
+    transition: transform var(--vc-mc-dur) var(--vc-mc-ease);
+    will-change: transform;
+    pointer-events: auto;
 }
 
-#vc-mc-player:hover .vc-mc-album-image-wrap {
-    width: 84px;
-    height: 84px;
+#vc-mc-player:is(:hover, :has(:focus-visible), :has(.vc-mc-native-volume-slider:active)) .vc-mc-album-image-wrap {
+    transform: none;
 }
 
 #vc-mc-album-image {
+    display: block;
     width: 100%;
     height: 100%;
     object-fit: cover;
-    border-radius: 6px;
-    flex-shrink: 0;
+    border-radius: 8px;
     cursor: pointer;
     transition: filter 0.2s ease;
 }
@@ -125,52 +130,53 @@
 /* Source indicator — single subtle icon, bottom-right of album art */
 .vc-mc-source-indicator {
     position: absolute;
-    bottom: 3px;
-    right: 3px;
-    width: 11px;
-    height: 11px;
+    bottom: 4px;
+    right: 4px;
+    width: 13px;
+    height: 13px;
     color: #fff;
     opacity: 0.35;
     pointer-events: none;
-    z-index: 10;
-    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+    filter: drop-shadow(0 1px 2px rgb(0 0 0 / 60%));
 }
 
 .vc-mc-source-badge {
+    display: block;
     width: 100%;
     height: 100%;
-    fill: currentColor;
-    display: block;
 }
 
+/* ── Middle column ──────────────────────────────────────────── */
+.vc-mc-middle-content-col {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-width: 0;
+}
 
 /* ── Titles ─────────────────────────────────────────────────── */
+/* Width is capped to what fits in the pill, so the text never needs re-truncating */
 .vc-mc-titles-wrapper {
     display: flex;
     flex-direction: column;
-    white-space: nowrap;
-    overflow: hidden;
+    min-width: 0;
+    max-width: min(100%, calc(var(--vc-mc-pill-x) * (100cqi - 16px) - 2 * var(--vc-mc-pad) - 58px));
     padding-top: 2px;
+    transform: translate(calc(48px - var(--vc-mc-art)), 46px);
+    transition: transform var(--vc-mc-dur) var(--vc-mc-ease);
+    will-change: transform;
+    pointer-events: auto;
+}
+
+#vc-mc-player:is(:hover, :has(:focus-visible), :has(.vc-mc-native-volume-slider:active)) .vc-mc-titles-wrapper {
+    transform: none;
 }
 
 #vc-mc-song-title {
     font-size: 15px;
     font-weight: 700;
-    color: var(--header-primary, #fff);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     line-height: 1.2;
-}
-
-.vc-mc-artist-name {
-    font-size: 12px;
-    color: var(--text-muted, #B9BBBE);
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    line-height: normal;
+    color: var(--header-primary, #fff);
 }
 
 #vc-mc-song-title[role="link"]:hover {
@@ -178,63 +184,88 @@
     cursor: pointer;
 }
 
-/* ── Hover controls ─────────────────────────────────────────── */
-.vc-mc-hover-playback-controls {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    opacity: 0;
-    pointer-events: none;
-    height: 0;
+.vc-mc-artist-name {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted, #b9bbbe);
+    white-space: nowrap;
     overflow: hidden;
-    transition: opacity 0.2s ease, height 0.35s ease, margin 0.35s ease;
+    text-overflow: ellipsis;
 }
 
-#vc-mc-player:hover .vc-mc-hover-playback-controls {
+/* ── Revealed on expand: playback controls and volume column ── */
+.vc-mc-hover-playback-controls,
+.vc-mc-volume-col {
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(8px);
+    pointer-events: none;
+    transition:
+        opacity 0.12s ease,
+        transform var(--vc-mc-dur) var(--vc-mc-ease),
+        visibility 0s linear 0.12s;
+}
+
+#vc-mc-player:is(:hover, :has(:focus-visible), :has(.vc-mc-native-volume-slider:active)) :is(.vc-mc-hover-playback-controls, .vc-mc-volume-col) {
     opacity: 1;
+    visibility: visible;
+    transform: none;
     pointer-events: auto;
+    transition:
+        opacity 0.2s ease 0.1s,
+        transform var(--vc-mc-dur) var(--vc-mc-ease),
+        visibility 0s;
+}
+
+.vc-mc-hover-playback-controls {
+    display: flex;
+    align-items: center;
     height: 48px;
-    transition-delay: 0.15s;
 }
 
 /* ── Playback buttons ───────────────────────────────────────── */
+/* Buttons share the row equally and shrink with it; icons scale with the button */
 .vc-mc-button-row {
     display: flex;
-    flex-direction: row;
-    justify-content: flex-start;
-    gap: 4px;
-    padding-left: 1px;
+    gap: 2px;
+    width: 100%;
 }
 
 .vc-mc-button {
-    margin: 0;
-    border-radius: var(--radius-sm);
-    background: none;
-    color: var(--interactive-icon-default, #B9BBBE);
-    padding: 0;
-    width: 46px;
-    height: 34px;
     display: flex;
     justify-content: center;
     align-items: center;
-    cursor: pointer;
+    margin: 0;
+    padding: 0;
     border: none;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--interactive-icon-default, #b9bbbe);
+    cursor: pointer;
 }
 
 .vc-mc-button:hover {
-    color: var(--interactive-icon-hover, #DCDDDE);
+    color: var(--interactive-icon-hover, #dcddde);
     background-color: var(--background-mod-strong);
 }
 
+.vc-mc-button-row .vc-mc-button {
+    position: relative;
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 46px;
+    height: 34px;
+}
+
 .vc-mc-button-icon {
-    height: 36px;
-    width: 36px;
+    width: min(36px, 100%);
+    height: auto;
+    aspect-ratio: 1;
 }
 
 .vc-mc-shuffle .vc-mc-button-icon,
-.vc-mc-repeat  .vc-mc-button-icon {
-    width: 24px;
-    height: 24px;
+.vc-mc-repeat .vc-mc-button-icon {
+    width: min(24px, 75%);
 }
 
 /* Active state for shuffle / repeat — uses accent color */
@@ -246,36 +277,19 @@
 }
 
 .vc-mc-repeat-1 {
-    font-size: 70%;
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
+    font-size: 70%;
 }
 
-/* ── Right: Volume column ───────────────────────────────────── */
+/* ── Volume column ──────────────────────────────────────────── */
 .vc-mc-volume-col {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: space-between;
-    width: 0px;
-    opacity: 0;
-    pointer-events: none;
-    height: 0px;
-    overflow: hidden;
-    margin-left: 0;
-    transition: opacity 0.2s ease, width 0.35s ease, margin 0.35s ease, height 0.35s ease;
-}
-
-#vc-mc-player:hover .vc-mc-volume-col {
-    opacity: 1;
-    pointer-events: auto;
-    width: 24px;
+    flex-shrink: 0;
+    width: 32px;
     height: 84px;
-    overflow: visible;
     margin-left: 6px;
-    transition-delay: 0.15s;
 }
 
 .vc-mc-volume-bar-col {
@@ -283,71 +297,80 @@
     flex-direction: column;
     align-items: center;
     width: 100%;
+    height: 100%;
+}
+
+.vc-mc-volume-button {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    margin-bottom: 4px;
+}
+
+.vc-mc-volume-button:hover {
+    color: var(--interactive-icon-active, #fff);
+}
+
+.vc-mc-volume-button .vc-mc-button-icon {
+    width: 18px;
 }
 
 .vc-mc-volume-slider-container {
-    flex-grow: 1;
-    width: 24px;
-    height: 48px;
-    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
+    flex: 1 1 0;
+    width: 100%;
+    min-height: 0;
 }
 
+/* Rotated horizontal range: its 48px length becomes the visual height */
 .vc-mc-native-volume-slider {
-    -webkit-appearance: none;
     appearance: none;
+    flex-shrink: 0;
     width: 48px;
     height: 4px;
-    background: #4f545c;
+    margin: 0;
     border-radius: 2px;
+    background: #4f545c;
     outline: none;
     cursor: pointer;
     transform: rotate(-90deg);
-    margin: 0;
-    transition: opacity 0.2s ease;
 }
 
 .vc-mc-native-volume-slider::-webkit-slider-thumb {
-    -webkit-appearance: none;
     appearance: none;
     width: 12px;
     height: 12px;
     border-radius: 50%;
     background-color: var(--header-primary, #fff);
+    box-shadow: 0 2px 4px rgb(0 0 0 / 50%);
     cursor: pointer;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
 }
 
-.vc-mc-volume-button {
-    width: 32px !important;
-    height: 32px !important;
-    margin-bottom: 4px;
-    background-color: transparent !important;
-    color: var(--interactive-icon-default, #B9BBBE) !important;
-    border-radius: var(--radius-sm) !important;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    flex-shrink: 0;
+.vc-mc-native-volume-slider:focus-visible::-webkit-slider-thumb {
+    outline: 2px solid var(--vc-mc-accent);
+    outline-offset: 1px;
 }
 
-.vc-mc-volume-button:hover {
-    background-color: var(--background-mod-strong) !important;
-    color: var(--interactive-icon-active, #fff) !important;
-}
+/* ── Narrow sidebars ────────────────────────────────────────── */
+/* Not enough room for five buttons and the volume column: drop the column.
+   Volume stays available from the right-click menu on the art or title. */
+@container vc-mc (width < 280px) {
+    #vc-mc-player {
+        --vc-mc-pad: 10px;
+        --vc-mc-pill-x: 0.8;
+    }
 
-.vc-mc-volume-button .vc-mc-button-icon {
-    width: 18px;
-    height: 18px;
+    #vc-mc-player .vc-mc-volume-col {
+        display: none;
+    }
 }
 
 /* ── Utilities ──────────────────────────────────────────────── */
 .vc-mc-ellipoverflow {
     white-space: nowrap;
     overflow: hidden;
-    width: 100%;
     text-overflow: ellipsis;
 }
 

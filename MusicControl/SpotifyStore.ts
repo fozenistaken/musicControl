@@ -96,7 +96,7 @@ export const SpotifyStore = proxyLazyWebpack(() => {
 
         setVolume(percent: number) {
             this._req("put", "/volume", { query: { volume_percent: Math.round(percent) } })
-                .then(() => { this.volume = percent; this.emitChange(); });
+                .then(ok => { if (ok) { this.volume = percent; this.emitChange(); } });
         }
 
         setPlaying(playing: boolean) { this._req("put", playing ? "/play" : "/pause"); }
@@ -104,23 +104,26 @@ export const SpotifyStore = proxyLazyWebpack(() => {
 
         setShuffle(state: boolean) {
             this._req("put", "/shuffle", { query: { state } })
-                .then(() => { this.shuffle = state; this.emitChange(); });
+                .then(ok => { if (ok) { this.shuffle = state; this.emitChange(); } });
         }
 
         seek(ms: number) {
             if (this.isSettingPosition) return Promise.resolve();
             this.isSettingPosition = true;
             return this._req("put", "/seek", { query: { position_ms: Math.round(ms) } })
-                .catch((e: any) => {
-                    console.error("[MusicControls/Spotify] Failed to seek", e);
-                    this.isSettingPosition = false;
-                });
+                .then(ok => { if (!ok) this.isSettingPosition = false; });
         }
 
-        _req(method: "post" | "get" | "put", route: string, data: any = {}) {
+        // Resolves to whether the request succeeded, so fire-and-forget callers never leak rejections
+        _req(method: "post" | "get" | "put", route: string, data: any = {}): Promise<boolean> {
             if (this.device?.is_active) (data.query ??= {}).device_id = this.device.id;
-            const { socket } = SpotifySocket.getActiveSocketAndDevice();
-            return SpotifyAPI[method](socket.accountId, socket.accessToken, { url: API_BASE + route, ...data });
+            const socket = SpotifySocket.getActiveSocketAndDevice()?.socket;
+            if (!socket) return Promise.resolve(false);
+            return SpotifyAPI[method](socket.accountId, socket.accessToken, { url: API_BASE + route, ...data })
+                .then(() => true, (e: any) => {
+                    console.error(`[MusicControls/Spotify] ${method.toUpperCase()} ${route} failed`, e);
+                    return false;
+                });
         }
     }
 

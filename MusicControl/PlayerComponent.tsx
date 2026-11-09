@@ -18,27 +18,25 @@
 
 import "./styles.css";
 
-import { Flex } from "@components/Flex";
 import { CopyIcon, LinkIcon, OpenExternalIcon } from "@components/Icons";
 import { debounce } from "@shared/debounce";
 import { classNameFactory } from "@utils/css";
 import { copyWithToast } from "@utils/discord";
 import { classes } from "@utils/misc";
-import { ContextMenuApi, Menu, React, useEffect, useState, useStateFromStores } from "@webpack/common";
+import { ContextMenuApi, Menu, React, useEffect, useRef, useState, useStateFromStores } from "@webpack/common";
 
-import { getSourceOverride, MusicControls, MusicData, MusicSource, setSourceOverride, useMusicData } from "./MusicStore";
-import { SCStore } from "./SCStore";
-import { SpotifyStore } from "./SpotifyStore";
-import { YTMusicStore } from "./YTMusicStore";
+import { getVolume,MUSIC_STORES, MusicControls, MusicData, sourceLabel, useMusicData } from "./MusicStore";
 
 const cl = classNameFactory("vc-mc-");
 
+// Trailing debounce so dragging a slider sends one request per pause, not one per pixel
+const setVolumeDebounced = debounce((v: number) => MusicControls.setVolume(v), 120);
 
 // ── SVG Icons ─────────────────────────────────────────────────────────────────
 
 function Svg(path: string, label: string) {
     return () => (
-        <svg className={cl("button-icon", label)} height="24" width="24" viewBox="0 0 24 24" fill="currentColor" aria-label={label} focusable={false}>
+        <svg className={cl("button-icon", label)} height="24" width="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable={false}>
             <path d={path} />
         </svg>
     );
@@ -74,101 +72,86 @@ function SourceBadge({ source }: { source: MusicData["source"]; }) {
     );
 }
 
-// ── Source Selector (hover dropdown on badge) ─────────────────────────────────
-
-
-function SourceSelector({ active }: { active: MusicData["source"]; }) {
-    const override = useStateFromStores([SpotifyStore, SCStore, YTMusicStore], getSourceOverride);
-    const src = override ?? active;
-    if (!src) return null;
-    const label = src === "spotify" ? "Spotify" : src === "soundcloud" ? "SoundCloud" : "YouTube Music";
-    return (
-        <div className={cl("source-indicator")} title={label}>
-            <SourceBadge source={src} />
-        </div>
-    );
-}
-
 // ── Shared Button ─────────────────────────────────────────────────────────────
 
-function Button(props: React.ButtonHTMLAttributes<HTMLButtonElement>) {
-    return <button className={cl("button")} {...props}>{props.children}</button>;
+function Button({ className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+    return <button type="button" className={classes(cl("button"), className)} {...props} />;
 }
 
 // ── Controls Row ──────────────────────────────────────────────────────────────
 
 function Controls({ data }: { data: MusicData; }) {
     return (
-        <Flex className={cl("button-row")} gap="0">
+        <div className={cl("button-row")}>
             <Button
-                className={classes(cl("button"), cl("shuffle"), cl(data.shuffle ? "shuffle-on" : "shuffle-off"))}
+                className={classes(cl("shuffle"), cl(data.shuffle ? "shuffle-on" : "shuffle-off"))}
+                aria-label="Shuffle"
+                aria-pressed={data.shuffle}
                 onClick={() => MusicControls.setShuffle(!data.shuffle)}
             >
                 <ShuffleIcon />
             </Button>
-            <Button onClick={() => MusicControls.prev()}>
+            <Button aria-label="Previous" onClick={() => MusicControls.prev()}>
                 <SkipPrev />
             </Button>
-            <Button onClick={() => MusicControls.setPlaying(!data.isPlaying)}>
+            <Button aria-label={data.isPlaying ? "Pause" : "Play"} onClick={() => MusicControls.setPlaying(!data.isPlaying)}>
                 {data.isPlaying ? <PauseButton /> : <PlayButton />}
             </Button>
-            <Button onClick={() => MusicControls.next()}>
+            <Button aria-label="Next" onClick={() => MusicControls.next()}>
                 <SkipNext />
             </Button>
             <Button
-                className={classes(cl("button"), cl("repeat"), cl(data.repeatClassName))}
+                className={classes(cl("repeat"), cl(data.repeatClassName))}
+                aria-label="Repeat"
                 onClick={() => MusicControls.setRepeat(data.nextRepeat)}
-                style={{ position: "relative" }}
             >
                 {data.repeat === "track" && <span className={cl("repeat-1")}>1</span>}
                 <RepeatIcon />
             </Button>
-        </Flex>
+        </div>
     );
 }
 
 // ── Volume Bar ────────────────────────────────────────────────────────────────
 
-function VolumeBar({ data }: { data: MusicData; }) {
-    const storeVolume = useStateFromStores(
-        [SpotifyStore, SCStore, YTMusicStore],
-        () => {
-            if (data.source === "spotify") return SpotifyStore.volume;
-            if (data.source === "soundcloud") return SCStore.volume;
-            return YTMusicStore.volume;
-        }
-    ) ?? 100;
+function VolumeBar({ source, accent }: { source: MusicData["source"]; accent: string; }) {
+    const storeVolume = useStateFromStores(MUSIC_STORES, () => getVolume(source));
 
     const [localVolume, setLocalVolume] = useState(storeVolume);
-    const [lastVolume, setLastVolume]   = useState(storeVolume > 0 ? storeVolume : 100);
+    const [lastVolume, setLastVolume] = useState(storeVolume > 0 ? storeVolume : 100);
+    // Polled store values lag behind the thumb while dragging, so don't let them yank it back
+    const dragging = useRef(false);
 
     useEffect(() => {
+        if (dragging.current) return;
         setLocalVolume(storeVolume);
         if (storeVolume > 0) setLastVolume(storeVolume);
     }, [storeVolume]);
 
-    const onRelease = (v: number) => { if (v > 0) setLastVolume(v); MusicControls.setVolume(v); };
-
-    const toggleMute = () => {
-        if (localVolume === 0) { setLocalVolume(lastVolume); MusicControls.setVolume(lastVolume); }
-        else                   { setLocalVolume(0);          MusicControls.setVolume(0); }
+    const commit = (v: number) => {
+        setLocalVolume(v);
+        if (v > 0) setLastVolume(v);
+        setVolumeDebounced(v);
     };
 
-    // Use the literal accent color (e.g. "#ff5500") so it's resolved at render time,
-    // not via CSS cascade which can lag when switching sources.
-    const accent = data.accentColor;
+    const endDrag = () => { dragging.current = false; };
 
     return (
         <div className={cl("volume-bar-col")}>
-            <Button className={cl("volume-button")} onClick={toggleMute}>
+            <Button className={cl("volume-button")} aria-label={localVolume === 0 ? "Unmute" : "Mute"} onClick={() => commit(localVolume === 0 ? lastVolume : 0)}>
                 {localVolume === 0 ? <VolumeOff /> : <VolumeUp />}
             </Button>
             <div className={cl("volume-slider-container")}>
                 <input
                     type="range" min="0" max="100" value={localVolume}
-                    onInput={(e: React.ChangeEvent<HTMLInputElement>) => setLocalVolume(Number(e.currentTarget.value))}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => onRelease(Number(e.currentTarget.value))}
+                    aria-label="Volume"
+                    onChange={e => commit(Number(e.currentTarget.value))}
+                    onPointerDown={() => { dragging.current = true; }}
+                    onPointerUp={endDrag}
+                    onPointerCancel={endDrag}
+                    onBlur={endDrag}
                     className={cl("native-volume-slider")}
+                    // Literal accent so the fill updates in the same render as a source switch
                     style={{ background: `linear-gradient(to right, ${accent} ${localVolume}%, #4f545c ${localVolume}%)` }}
                 />
             </div>
@@ -176,19 +159,18 @@ function VolumeBar({ data }: { data: MusicData; }) {
     );
 }
 
-
 // ── Context Menus ─────────────────────────────────────────────────────────────
 
 function TrackContextMenu({ data }: { data: MusicData; }) {
-    const volume = useStateFromStores([SpotifyStore, SCStore, YTMusicStore], () => data.source === "spotify" ? SpotifyStore.volume : data.source === "soundcloud" ? SCStore.volume : YTMusicStore.volume);
+    const volume = useStateFromStores(MUSIC_STORES, () => getVolume(data.source));
     return (
         <Menu.Menu navId="vc-mc-track-menu" onClose={ContextMenuApi.closeContextMenu} aria-label="Track Menu">
             <Menu.MenuItem id="vc-mc-copy-title" label="Copy Song Title" action={() => copyWithToast(data.title)} icon={CopyIcon} />
-            <Menu.MenuItem id="vc-mc-copy-link"  label="Copy Link"       action={() => copyWithToast(data.openUrl)} icon={LinkIcon} />
-            <Menu.MenuItem id="vc-mc-open"        label={`Open in ${data.source === "spotify" ? "Spotify" : data.source === "soundcloud" ? "SoundCloud" : "YouTube Music"}`} action={() => MusicControls.openExternal()} icon={OpenExternalIcon} />
+            <Menu.MenuItem id="vc-mc-copy-link" label="Copy Link" action={() => copyWithToast(data.openUrl)} icon={LinkIcon} />
+            <Menu.MenuItem id="vc-mc-open" label={`Open in ${sourceLabel(data.source)}`} action={() => MusicControls.openExternal()} icon={OpenExternalIcon} />
             <Menu.MenuControlItem id="vc-mc-volume" key="vc-mc-volume" label="Volume"
                 control={(props: any, ref: any) => (
-                    <Menu.MenuSliderControl {...props} ref={ref} value={volume} minValue={0} maxValue={100} onChange={debounce((v: number) => MusicControls.setVolume(v))} />
+                    <Menu.MenuSliderControl {...props} ref={ref} value={volume} minValue={0} maxValue={100} onChange={setVolumeDebounced} />
                 )}
             />
         </Menu.Menu>
@@ -197,89 +179,75 @@ function TrackContextMenu({ data }: { data: MusicData; }) {
 
 // ── Main Player ───────────────────────────────────────────────────────────────
 
+const HIDE_AFTER_PAUSED_MS = 1000 * 60 * 5;
+
 export function Player() {
     const data = useMusicData();
-
-    const isPlayingRaw = useStateFromStores(
-        [SpotifyStore, SCStore, YTMusicStore],
-        () => SpotifyStore.isPlaying || SCStore.isPlaying || YTMusicStore.isPlaying
-    );
+    const isPlaying = data?.isPlaying ?? false;
 
     const [shouldHide, setShouldHide] = useState(false);
 
-    React.useEffect(() => {
+    useEffect(() => {
         setShouldHide(false);
-        if (!isPlayingRaw) {
-            const t = setTimeout(() => setShouldHide(true), 1000 * 60 * 5);
-            return () => clearTimeout(t);
-        }
-    }, [isPlayingRaw]);
+        if (isPlaying) return;
+        const t = setTimeout(() => setShouldHide(true), HIDE_AFTER_PAUSED_MS);
+        return () => clearTimeout(t);
+    }, [isPlaying]);
 
     if (!data || shouldHide) return null;
 
-    const accentStyle = { "--vc-mc-accent": data.accentColor } as React.CSSProperties;
+    const openMenu = (e: React.MouseEvent) => ContextMenuApi.openContextMenu(e, () => <TrackContextMenu data={data} />);
 
     return (
-        <div className={cl("position-anchor")}>
-            <div id={cl("player")} style={accentStyle}>
-                <div className={cl("horizontal-layout-wrapper")}>
-
-                    {/* Left: Album Art */}
-                    <div className={cl("album-col")}>
-                        {data.thumbnail && (
-                            <div className={cl("album-image-wrap")}>
-                                <img
-                                    id={cl("album-image")}
-                                    src={data.thumbnail}
-                                    alt="Album Art"
-                                    onClick={() => MusicControls.openExternal()}
-                                    onContextMenu={(e: any) =>
-                                        ContextMenuApi.openContextMenu(e, () => <TrackContextMenu data={data} />)
-                                    }
-                                    onError={(e: React.SyntheticEvent<HTMLImageElement>) => {
-                                        // YTM fallback: maxresdefault → hqdefault
-                                        const img = e.currentTarget;
-                                        if (img.src.includes("maxresdefault"))
-                                            img.src = img.src.replace("maxresdefault", "hqdefault");
-                                    }}
-                                />
-                                <SourceSelector active={data.source} />
-                            </div>
-                        )}
+        <div id={cl("player")} style={{ "--vc-mc-accent": data.accentColor } as React.CSSProperties}>
+            <div className={cl("bg")} />
+            {data.thumbnail && (
+                <div className={cl("album-image-wrap")} title={sourceLabel(data.source)}>
+                    <img
+                        id={cl("album-image")}
+                        src={data.thumbnail}
+                        alt="Album Art"
+                        draggable={false}
+                        onClick={() => MusicControls.openExternal()}
+                        onContextMenu={openMenu}
+                        onError={e => {
+                            // YTM fallback: maxresdefault → hqdefault
+                            const img = e.currentTarget;
+                            if (img.src.includes("maxresdefault"))
+                                img.src = img.src.replace("maxresdefault", "hqdefault");
+                        }}
+                    />
+                    <div className={cl("source-indicator")}>
+                        <SourceBadge source={data.source} />
                     </div>
-
-                    {/* Middle: Title + Controls */}
-                    <div className={cl("middle-content-col")}>
-                        <div className={cl("titles-wrapper")}>
-                            <div
-                                id={cl("song-title")}
-                                className={cl("ellipoverflow")}
-                                title={data.title}
-                                role="link"
-                                onClick={() => MusicControls.openExternal()}
-                                onContextMenu={(e: any) =>
-                                    ContextMenuApi.openContextMenu(e, () => <TrackContextMenu data={data} />)
-                                }
-                            >
-                                {data.title}
-                            </div>
-                            {data.artist && (
-                                <div className={cl("artist-name")} title={data.artist}>
-                                    {data.artist}
-                                </div>
-                            )}
-                        </div>
-                        <div className={cl("hover-playback-controls")}>
-                            <Controls data={data} />
-                        </div>
-                    </div>
-
-                    {/* Right: Volume */}
-                    <div className={cl("volume-col")}>
-                        <VolumeBar data={data} />
-                    </div>
-
                 </div>
+            )}
+
+            <div className={cl("middle-content-col")}>
+                <div className={cl("titles-wrapper")}>
+                    <div
+                        id={cl("song-title")}
+                        className={cl("ellipoverflow")}
+                        title={data.title}
+                        role="link"
+                        onClick={() => MusicControls.openExternal()}
+                        onContextMenu={openMenu}
+                    >
+                        {data.title}
+                    </div>
+                    {data.artist && (
+                        <div className={cl("artist-name")} title={data.artist}>
+                            {data.artist}
+                        </div>
+                    )}
+                </div>
+                <div className={cl("hover-playback-controls")}>
+                    <Controls data={data} />
+                </div>
+            </div>
+
+            <div className={cl("volume-col")}>
+                <VolumeBar source={data.source} accent={data.accentColor} />
             </div>
         </div>
     );

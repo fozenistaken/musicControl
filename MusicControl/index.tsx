@@ -18,12 +18,41 @@
 
 import ErrorBoundary from "@components/ErrorBoundary";
 import definePlugin, { OptionType } from "@utils/types";
-import { FluxDispatcher } from "@webpack/common";
+import { FluxDispatcher, React, ReactDOM, useRef, useState } from "@webpack/common";
 
 import { Player } from "./PlayerComponent";
 import { startPresence, stopPresence, updatePresence } from "./PresenceService";
-import { SC_DISPATCH_TYPE, startSCPolling, stopSCPolling } from "./SCStore";
-import { YTM_DISPATCH_TYPE, startYTMPolling, stopYTMPolling } from "./YTMusicStore";
+import { SC_DISPATCH_TYPE, SCPoller } from "./SCStore";
+import { YTM_DISPATCH_TYPE, YTMPoller } from "./YTMusicStore";
+
+// Discord nests the account panel at varying depths inside the panels container,
+// so mount the player as the panels' own first child instead of where the patch lands
+function PlayerAnchor() {
+    const fallbackRef = useRef<HTMLDivElement>(null);
+    const [host, setHost] = useState<HTMLElement | null>(null);
+
+    React.useLayoutEffect(() => {
+        const panels = fallbackRef.current?.closest<HTMLElement>('section[class*="panels_"]');
+        if (!panels) return;
+
+        const el = document.createElement("div");
+        el.className = "vc-mc-position-anchor";
+        panels.prepend(el);
+        setHost(el);
+        return () => el.remove();
+    }, []);
+
+    if (host) return ReactDOM.createPortal(<Player />, host);
+
+    return (
+        <div ref={fallbackRef} className="vc-mc-position-anchor">
+            <Player />
+        </div>
+    );
+}
+
+let startTimer: ReturnType<typeof setTimeout> | undefined;
+let startGeneration = 0;
 
 declare const VencordNative: {
     pluginHelpers: {
@@ -107,25 +136,31 @@ export default definePlugin({
         },
     ],
 
-    async start() {
+    start() {
+        const gen = ++startGeneration;
         const tryStart = async () => {
             try {
                 await VencordNative.pluginHelpers.MusicControls.start();
             } catch (e) {
+                if (gen !== startGeneration) return;
                 console.error("[MusicControls] Native start failed, retrying in 2s:", e);
-                setTimeout(tryStart, 2000);
+                startTimer = setTimeout(tryStart, 2000);
                 return;
             }
-            startYTMPolling(FluxDispatcher);
-            startSCPolling(FluxDispatcher);
+            // Plugin was stopped while the native call was in flight
+            if (gen !== startGeneration) return;
+            YTMPoller.start();
+            SCPoller.start();
             startPresence();
         };
         tryStart();
     },
 
     stop() {
-        stopYTMPolling();
-        stopSCPolling();
+        startGeneration++;
+        clearTimeout(startTimer);
+        YTMPoller.stop();
+        SCPoller.stop();
         stopPresence();
         FluxDispatcher.dispatch({ type: YTM_DISPATCH_TYPE, data: null });
         FluxDispatcher.dispatch({ type: SC_DISPATCH_TYPE, data: null });
@@ -144,9 +179,7 @@ export default definePlugin({
                         </div>
                     )}
                 >
-                    <div className="vc-mc-position-anchor">
-                        <Player />
-                    </div>
+                    <PlayerAnchor />
                 </ErrorBoundary>
                 <VencordOriginal {...props} />
             </>

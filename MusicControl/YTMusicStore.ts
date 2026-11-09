@@ -19,6 +19,8 @@
 import { proxyLazyWebpack } from "@webpack";
 import { Flux, FluxDispatcher } from "@webpack/common";
 
+import { applyPolledState, createPoller } from "./utils";
+
 declare const VencordNative: {
     native: { openExternal(url: string): void; };
     pluginHelpers: {
@@ -50,45 +52,14 @@ interface YTMState {
 
 export const YTM_DISPATCH_TYPE = "MC_YTMUSIC_STATE_UPDATE";
 
-// ── Polling ───────────────────────────────────────────────────────────────────
-// Matches the original plugin exactly: always dispatch every tick so that
-// isSettingPosition is always reset and controls always arrive promptly.
-// Uses recursive setTimeout (not setInterval) so ticks never overlap even
-// if the IPC round-trip is slow.
-// Adaptive delay: 150 ms while playing, 1000 ms while paused/no track.
-
-let _ytmStop = false;
-
-export function startYTMPolling(dispatch: typeof FluxDispatcher) {
-    _ytmStop = false;
-
-    const tick = async () => {
-        if (_ytmStop) return;
-        try {
-            const data = await VencordNative.pluginHelpers.MusicControls.getYTMState() as YTMState | null;
-            const alive = data && Date.now() - data._ts < 10_000 ? data : null;
-            dispatch.dispatch({ type: YTM_DISPATCH_TYPE, data: alive });
-            setTimeout(tick, alive?.isPlaying ? 150 : 1000);
-        } catch {
-            if (!_ytmStop) setTimeout(tick, 500);
-        }
-    };
-
-    tick();
-}
-
-export function stopYTMPolling() {
-    _ytmStop = true;
-}
+export const YTMPoller = createPoller(YTM_DISPATCH_TYPE, () => VencordNative.pluginHelpers.MusicControls.getYTMState() as any);
 
 // ── Flux Store ────────────────────────────────────────────────────────────────
 
 export const YTMusicStore = proxyLazyWebpack(() => {
     const { Store } = Flux;
 
-    class YTMusicStore extends (Store as any) {
-        declare emitChange: () => void;
-
+    class YTMusicStore extends Store {
         public mPosition = 0;
         public _start = 0;
         public isSettingPosition = false;
@@ -141,23 +112,9 @@ export const YTMusicStore = proxyLazyWebpack(() => {
 
     const store = new YTMusicStore(FluxDispatcher, {
         [YTM_DISPATCH_TYPE]({ data }: { data: YTMState | null; }) {
-            if (!data) {
-                store.track = null;
-                store.isPlaying = false;
-                store.isSettingPosition = false;
-                store.emitChange();
-                return;
-            }
-            store.track = data.track ?? null;
-            store.isPlaying = data.isPlaying ?? false;
-            store.volume = data.volume ?? 100;
-            store.repeat = data.repeat ?? "NONE";
-            store.shuffle = data.shuffle ?? false;
-            store.position = data.position ?? 0;
-            store.isSettingPosition = false;
-            store.emitChange();
+            applyPolledState(store, data);
         }
-    });
+    } as any); // custom action types aren't in FluxEvents
 
     return store;
 });

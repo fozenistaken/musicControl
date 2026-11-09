@@ -17,11 +17,11 @@
  */
 
 import { Settings } from "@api/Settings";
-import { FluxDispatcher, ApplicationAssetUtils } from "@webpack/common";
+import { ApplicationAssetUtils, FluxDispatcher } from "@webpack/common";
 
-import { SCStore } from "./SCStore";
-import { SpotifyStore } from "./SpotifyStore";
-import { YTMusicStore } from "./YTMusicStore";
+import { pickSource } from "./MusicStore";
+import { SC_DISPATCH_TYPE, SCStore } from "./SCStore";
+import { YTM_DISPATCH_TYPE, YTMusicStore } from "./YTMusicStore";
 
 declare const VencordNative: {
     pluginHelpers: {
@@ -33,225 +33,121 @@ declare const VencordNative: {
 
 const SOCKET_ID = "MusicControls";
 
+const APPS = {
+    soundcloud: { appId: "1500082049980043264", name: "SoundCloud", logo: "soundcloud-logo" },
+    ytmusic: { appId: "1499934999896653935", name: "YouTube Music", logo: "ytm-logo" },
+};
+
+type PresenceSource = keyof typeof APPS;
+
 // ── Image helpers ─────────────────────────────────────────────────────────────
 // fetchAssetIds converts external URLs to Discord's mp:external/... format,
 // which is required for LOCAL_ACTIVITY_UPDATE (renderer-local display).
 // The real Discord IPC pipe (used by setRPCActivity) accepts raw HTTPS URLs
 // directly — no conversion needed, just like soundcloud-rpc does.
 
+const assetCache = new Map<string, string>();
+
 async function getExternalAssetId(appId: string, url?: string): Promise<string | undefined> {
     if (!url) return undefined;
+    const cached = assetCache.get(url);
+    if (cached) return cached;
     try {
         const ids = await Promise.race([
             ApplicationAssetUtils.fetchAssetIds(appId, [url]),
             new Promise<never>((_, reject) => setTimeout(reject, 3000)),
         ]);
-        return (ids as string[])[0];
+        const id = (ids as string[])[0];
+        if (id) {
+            if (assetCache.size > 50) assetCache.clear();
+            assetCache.set(url, id);
+        }
+        return id;
     } catch {
         return undefined;
     }
 }
 
-// ── LOCAL_ACTIVITY_UPDATE builders (for your own client) ──────────────────────
+// ── Activity builder ──────────────────────────────────────────────────────────
 
-async function buildSCActivity() {
-    const track = SCStore.track;
-    if (!track) return null;
-
-    const position = SCStore.position;
-    const duration = track.duration;
-    const now = Date.now();
-    const appId = "1500082049980043264";
-
-    const large_image = await getExternalAssetId(appId, track.thumbnailOriginal);
-
-    return {
-        name: "SoundCloud",
-        type: 2,
-        application_id: appId,
-        details: track.title,
-        state: track.artist ? `by ${track.artist}` : undefined,
-        timestamps: SCStore.isPlaying && duration > 0 ? {
-            start: Math.floor(now - position),
-            end:   Math.floor(now + (duration - position)),
-        } : undefined,
-        assets: large_image ? {
-            large_image,
-            large_text: track.title,
-            small_image: "soundcloud-logo",
-            small_text:  "SoundCloud",
-        } : undefined,
-        buttons: track.permalink && track.permalink.split("/").length > 4 ? [
-            { label: "Listen on SoundCloud", url: track.permalink },
-        ] : undefined,
-    };
+function getActiveSource(): PresenceSource | null {
+    if (!Settings.plugins.MusicControls.enablePresence) return null;
+    const source = pickSource();
+    // Spotify presence is handled natively by Discord
+    return source === "spotify" ? null : source;
 }
 
-async function buildYTMActivity() {
-    const track = YTMusicStore.track;
+function buildActivity(source: PresenceSource) {
+    const { appId, name, logo } = APPS[source];
+    const store = source === "soundcloud" ? SCStore : YTMusicStore;
+    const track = store.track;
     if (!track) return null;
 
-    const position = YTMusicStore.position;
-    const duration = track.duration;
-    const now = Date.now();
-    const appId = "1499934999896653935";
-
-    const url = (track.thumbnail && !track.thumbnail.startsWith("data:")) ? track.thumbnail : undefined;
-    const large_image = await getExternalAssetId(appId, url);
-
-    return {
-        name: "YouTube Music",
-        type: 2,
-        application_id: appId,
-        details: track.title,
-        state: track.artist ? `by ${track.artist}` : undefined,
-        timestamps: YTMusicStore.isPlaying && duration > 0 ? {
-            start: Math.floor(now - position),
-            end:   Math.floor(now + (duration - position)),
-        } : undefined,
-        assets: large_image ? {
-            large_image,
-            large_text: track.title,
-            small_image: "ytm-logo",
-            small_text:  "YouTube Music",
-        } : undefined,
-        buttons: track.id ? [
-            { label: "Listen on YouTube Music", url: `https://music.youtube.com/watch?v=${track.id}` },
-        ] : undefined,
-    };
-}
-
-// ── Real IPC RPC builders (visible to other users) ────────────────────────────
-// These are synchronous — no fetchAssetIds needed.
-// Raw CDN URLs work directly over the Discord IPC pipe, the same way
-// soundcloud-rpc passes artworkUrl straight into largeImageKey.
-
-function buildSCRPCActivity(): { appId: string; activity: object } | null {
-    const track = SCStore.track;
-    if (!track) return null;
-
-    const position = SCStore.position;
-    const duration = track.duration;
-    const now = Date.now();
-    const appId = "1500082049980043264";
-
-    return {
-        appId,
-        activity: {
-            name:    "SoundCloud",
-            type:    2,
-            details: track.title,
-            state:   track.artist ? `by ${track.artist}` : undefined,
-            timestamps: SCStore.isPlaying && duration > 0 ? {
-                start: Math.floor(now - position),
-                end:   Math.floor(now + (duration - position)),
-            } : undefined,
-            assets: {
-                large_image: track.thumbnailOriginal || "soundcloud-logo",
-                large_text:  track.title,
-                small_image: "soundcloud-logo",
-                small_text:  "SoundCloud",
-            },
-            buttons: track.permalink && track.permalink.split("/").length > 4 ? [
-                { label: "Listen on SoundCloud", url: track.permalink },
-            ] : undefined,
-            instance: false,
-        },
-    };
-}
-
-function buildYTMRPCActivity(): { appId: string; activity: object } | null {
-    const track = YTMusicStore.track;
-    if (!track) return null;
-
-    const position = YTMusicStore.position;
-    const duration = track.duration;
-    const now = Date.now();
-    const appId = "1499934999896653935";
-
-    const thumbnailUrl = (track.thumbnail && !track.thumbnail.startsWith("data:"))
-        ? track.thumbnail : undefined;
-
-    return {
-        appId,
-        activity: {
-            name:    "YouTube Music",
-            type:    2,
-            details: track.title,
-            state:   track.artist ? `by ${track.artist}` : undefined,
-            timestamps: YTMusicStore.isPlaying && duration > 0 ? {
-                start: Math.floor(now - position),
-                end:   Math.floor(now + (duration - position)),
-            } : undefined,
-            assets: {
-                large_image: thumbnailUrl || "ytm-logo",
-                large_text:  track.title,
-                small_image: "ytm-logo",
-                small_text:  "YouTube Music",
-            },
-            buttons: track.id ? [
-                { label: "Listen on YouTube Music", url: `https://music.youtube.com/watch?v=${track.id}` },
-            ] : undefined,
-            instance: false,
-        },
-    };
-}
-
-// ── Priority resolution ───────────────────────────────────────────────────────
-
-function _getActiveSource() {
-    const settings = Settings.plugins.MusicControls;
-    if (!settings.enablePresence) return null;
-    if (SpotifyStore.track && SpotifyStore.device?.is_active && SpotifyStore.isPlaying) return null;
-
-    const scPlaying  = !!(SCStore.track  && SCStore.isPlaying);
-    const ytmPlaying = !!(YTMusicStore.track && YTMusicStore.isPlaying);
-    const priority   = (settings.presencePriority as string | undefined) ?? "sc_ytm";
-
-    if (scPlaying || ytmPlaying) {
-        if (priority === "sc_ytm") return scPlaying ? "sc" : "ytm";
-        return ytmPlaying ? "ytm" : "sc";
+    let imageUrl: string | undefined;
+    let listenUrl: string | undefined;
+    if (source === "soundcloud") {
+        imageUrl = SCStore.track!.thumbnailOriginal;
+        // Bare profile links (soundcloud.com/user) are not a track
+        if (SCStore.track!.permalink?.split("/").length > 4) listenUrl = SCStore.track!.permalink;
+    } else {
+        // data: URLs can't be used as presence images
+        if (track.thumbnail && !track.thumbnail.startsWith("data:")) imageUrl = track.thumbnail;
+        if (YTMusicStore.track!.id) listenUrl = `https://music.youtube.com/watch?v=${YTMusicStore.track!.id}`;
     }
-    // Paused fallback
-    if (priority === "sc_ytm") return SCStore.track ? "sc" : YTMusicStore.track ? "ytm" : null;
-    return YTMusicStore.track ? "ytm" : SCStore.track ? "sc" : null;
-}
 
-export async function getPresenceActivity() {
-    const source = _getActiveSource();
-    if (!source) return null;
-    if (source === "sc")  return buildSCActivity();
-    return buildYTMActivity();
-}
+    const position = store.position;
+    const now = Date.now();
 
-function getRPCActivity() {
-    const source = _getActiveSource();
-    if (!source) return null;
-    if (source === "sc")  return buildSCRPCActivity();
-    return buildYTMRPCActivity();
+    return {
+        appId,
+        imageUrl,
+        activity: {
+            name,
+            type: 2,
+            details: track.title,
+            state: track.artist ? `by ${track.artist}` : undefined,
+            timestamps: store.isPlaying && track.duration > 0 ? {
+                start: Math.floor(now - position),
+                end: Math.floor(now + (track.duration - position)),
+            } : undefined,
+            assets: {
+                large_image: imageUrl || logo,
+                large_text: track.title,
+                small_image: logo,
+                small_text: name,
+            },
+            buttons: listenUrl ? [{ label: `Listen on ${name}`, url: listenUrl }] : undefined,
+        },
+    };
 }
 
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 
 export async function updatePresence() {
     try {
+        const source = getActiveSource();
+        const built = source && buildActivity(source);
+
+        // Real Discord IPC RPC — makes presence visible to other users.
+        // Raw CDN image URLs work over the pipe; mp:external/... only works locally.
+        if (built) VencordNative.pluginHelpers.MusicControls.setRPCActivity(built.appId, { ...built.activity, instance: false });
+        else VencordNative.pluginHelpers.MusicControls.setRPCActivity("", null);
+
         // LOCAL_ACTIVITY_UPDATE — updates your own client display
-        const localActivity = await getPresenceActivity();
+        let localActivity: object | null = null;
+        if (built) {
+            const largeImage = await getExternalAssetId(built.appId, built.imageUrl);
+            localActivity = {
+                ...built.activity,
+                application_id: built.appId,
+                assets: largeImage ? { ...built.activity.assets, large_image: largeImage } : undefined,
+            };
+        }
         FluxDispatcher.dispatch({
             type: "LOCAL_ACTIVITY_UPDATE",
             activity: localActivity,
             socketId: SOCKET_ID,
         });
-
-        // Real Discord IPC RPC — makes presence visible to other users.
-        // Uses raw CDN image URLs (same as soundcloud-rpc / @xhayper/discord-rpc).
-        // mp:external/... URLs only work in LOCAL_ACTIVITY_UPDATE, not over the pipe.
-        const rpc = getRPCActivity();
-        if (rpc) {
-            VencordNative.pluginHelpers.MusicControls.setRPCActivity(rpc.appId, rpc.activity);
-        } else {
-            VencordNative.pluginHelpers.MusicControls.setRPCActivity("", null);
-        }
     } catch (e) {
         console.error("[MusicControls] updatePresence failed:", e);
     }
@@ -267,31 +163,40 @@ export function clearPresence() {
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
+// SC/YTM dispatch every poll tick (150 ms while playing), so a plain debounce
+// would never fire. Instead, only schedule an update when what the presence
+// shows actually changes: source, track, play state, or a seek.
 
-const WATCHED_EVENTS = [
-    "MC_SOUNDCLOUD_STATE_UPDATE",
-    "MC_YTMUSIC_STATE_UPDATE",
-    "SPOTIFY_PLAYER_STATE",
-    "MC_SOURCE_OVERRIDE",
-];
+const WATCHED_EVENTS = [SC_DISPATCH_TYPE, YTM_DISPATCH_TYPE, "SPOTIFY_PLAYER_STATE"];
+const SEEK_THRESHOLD_MS = 2000;
 
-let _interval: ReturnType<typeof setInterval> | null = null;
-let _debounce: ReturnType<typeof setTimeout> | null = null;
+let lastKey: string | null = null;
+let lastStart = 0;
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-const _onDispatch = () => {
-    if (_debounce) clearTimeout(_debounce);
-    _debounce = setTimeout(updatePresence, 1000);
-};
+function onDispatch() {
+    const source = getActiveSource();
+    const store = source === "soundcloud" ? SCStore : source === "ytmusic" ? YTMusicStore : null;
+    const track = store?.track;
+    const key = store && track ? `${source}|${track.id}|${track.title}|${track.artist}|${store.isPlaying}` : "";
+    const start = store?.isPlaying ? Date.now() - store.position : 0;
+
+    if (key === lastKey && Math.abs(start - lastStart) < SEEK_THRESHOLD_MS) return;
+    lastKey = key;
+    lastStart = start;
+
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(updatePresence, 500);
+}
 
 export function startPresence() {
-    for (const type of WATCHED_EVENTS) FluxDispatcher.subscribe(type, _onDispatch);
+    lastKey = null;
+    for (const type of WATCHED_EVENTS) FluxDispatcher.subscribe(type, onDispatch);
     updatePresence();
-    _interval = setInterval(updatePresence, 10_000);
 }
 
 export function stopPresence() {
-    for (const type of WATCHED_EVENTS) FluxDispatcher.unsubscribe(type, _onDispatch);
-    if (_debounce !== null) { clearTimeout(_debounce); _debounce = null; }
-    if (_interval !== null) { clearInterval(_interval); _interval = null; }
+    for (const type of WATCHED_EVENTS) FluxDispatcher.unsubscribe(type, onDispatch);
+    if (debounceTimer !== null) { clearTimeout(debounceTimer); debounceTimer = null; }
     clearPresence();
 }
